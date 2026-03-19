@@ -1,0 +1,44 @@
+name: Notify Current Flight Run
+
+on:
+  workflow_run:
+    workflows: ["Flight Watch"]
+    types:
+      - completed
+
+jobs:
+  notify-once:
+    if: ${{ github.event.workflow_run.id == 23318319013 }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Telegram completion notice
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HTML_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          message = (
+              f"Flight Watch run #{os.environ['RUN_NUMBER']} completed.\n"
+              f"Status: {os.environ.get('CONCLUSION') or 'unknown'}\n"
+              f"Run: {os.environ['HTML_URL']}"
+          )
+
+          response = requests.post(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              json={
+                  "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                  "text": message,
+                  "disable_web_page_preview": False,
+              },
+              timeout=30,
+          )
+          response.raise_for_status()
+          PY
