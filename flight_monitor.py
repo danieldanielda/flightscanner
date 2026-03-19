@@ -66,11 +66,6 @@ AIRLINE_DISPLAY_NAMES = {
     "israir": "Israir",
     "ישראייר": "Israir",
 }
-OFFICIAL_AIRLINE_LINKS = {
-    "EL AL": "https://www.elal.com/",
-    "Arkia": "https://www.arkia.com/",
-    "Israir": "https://www.israir.co.il/en-US",
-}
 TELEGRAM_TIMEOUT_SECONDS = 30
 PAGE_TIMEOUT_MS = 75_000
 PAGE_SETTLE_MS = 7_000
@@ -88,10 +83,11 @@ class Destination:
 @dataclass(frozen=True)
 class SearchProvider:
     name: str
-    url_builder: Callable[[str, str, date], str]
+    url_builder: Callable[[str, str, date], str] | None
     result_markers: tuple[str, ...]
     no_result_markers: tuple[str, ...]
     require_airline_hint: bool = True
+    search_action: Callable[[Page, "Destination", date], str | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +151,194 @@ def google_flights_url(origin: str, destination: str, departure_date: date) -> s
     return f"https://www.google.com/travel/flights?q={requests.utils.quote(query)}"
 
 
+def elal_home_url(_: str, __: str, ___: date) -> str:
+    return "https://www.elal.com/"
+
+
+def arkia_home_url(_: str, __: str, ___: date) -> str:
+    return "https://www.arkia.com/"
+
+
+def israir_home_url(_: str, __: str, ___: date) -> str:
+    return "https://www.israir.co.il/en-US"
+
+
+def fill_first(page: Page, selectors: list[str], value: str) -> bool:
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if locator.count() == 0:
+                continue
+            locator.first.click(timeout=2_000)
+            locator.first.fill(value, timeout=3_000)
+            return True
+        except PlaywrightError:
+            continue
+    return False
+
+
+def click_first(page: Page, selectors: list[str]) -> bool:
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            if locator.count() == 0:
+                continue
+            locator.first.click(timeout=3_000)
+            return True
+        except PlaywrightError:
+            continue
+    return False
+
+
+def click_button_by_text(page: Page, patterns: list[str]) -> bool:
+    for pattern in patterns:
+        try:
+            locator = page.get_by_role("button", name=re.compile(pattern, re.IGNORECASE))
+            if locator.count() == 0:
+                continue
+            locator.first.click(timeout=3_000)
+            return True
+        except PlaywrightError:
+            continue
+    return False
+
+
+def destination_candidates(destination: Destination) -> list[str]:
+    return [destination.city, destination.code]
+
+
+def date_candidates(departure_date: date) -> list[str]:
+    return [
+        departure_date.isoformat(),
+        departure_date.strftime("%d/%m/%Y"),
+        departure_date.strftime("%m/%d/%Y"),
+        departure_date.strftime("%d %b %Y"),
+        departure_date.strftime("%b %d, %Y"),
+    ]
+
+
+def perform_airline_search(
+    page: Page,
+    homepage: str,
+    destination: Destination,
+    departure_date: date,
+    destination_selectors: list[str],
+    date_selectors: list[str],
+    search_patterns: list[str],
+) -> str | None:
+    try:
+        page.goto(homepage, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+        page.wait_for_timeout(PAGE_SETTLE_MS)
+        accept_cookies_if_present(page)
+    except (PlaywrightTimeoutError, PlaywrightError):
+        return None
+
+    destination_filled = False
+    for value in destination_candidates(destination):
+        if fill_first(page, destination_selectors, value):
+            destination_filled = True
+            break
+
+    date_filled = False
+    for value in date_candidates(departure_date):
+        if fill_first(page, date_selectors, value):
+            date_filled = True
+            break
+
+    if not destination_filled and not date_filled:
+        return None
+
+    clicked = click_button_by_text(page, search_patterns)
+    if not clicked:
+        clicked = click_first(
+            page,
+            [
+                "button[type='submit']",
+                "input[type='submit']",
+                "[data-testid*='search']",
+                "[class*='search'] button",
+            ],
+        )
+
+    if not clicked:
+        return None
+
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+        page.wait_for_timeout(PAGE_SETTLE_MS)
+    except (PlaywrightTimeoutError, PlaywrightError):
+        return None
+
+    if page.url == homepage:
+        return None
+
+    return page.url
+
+
+def search_elal(page: Page, destination: Destination, departure_date: date) -> str | None:
+    return perform_airline_search(
+        page,
+        "https://www.elal.com/",
+        destination,
+        departure_date,
+        destination_selectors=[
+            "input[placeholder*='To']",
+            "input[placeholder*='Destination']",
+            "input[aria-label*='To']",
+            "input[aria-label*='Destination']",
+            "input[name*='destination']",
+        ],
+        date_selectors=[
+            "input[placeholder*='Departure']",
+            "input[aria-label*='Departure']",
+            "input[name*='depart']",
+        ],
+        search_patterns=["search", "find", "book", "show flights"],
+    )
+
+
+def search_arkia(page: Page, destination: Destination, departure_date: date) -> str | None:
+    return perform_airline_search(
+        page,
+        "https://www.arkia.com/",
+        destination,
+        departure_date,
+        destination_selectors=[
+            "input[placeholder*='To']",
+            "input[placeholder*='Destination']",
+            "input[aria-label*='To']",
+            "input[name*='destination']",
+        ],
+        date_selectors=[
+            "input[placeholder*='Departure']",
+            "input[aria-label*='Departure']",
+            "input[name*='depart']",
+        ],
+        search_patterns=["search", "find", "book", "show flights"],
+    )
+
+
+def search_israir(page: Page, destination: Destination, departure_date: date) -> str | None:
+    return perform_airline_search(
+        page,
+        "https://www.israir.co.il/en-US",
+        destination,
+        departure_date,
+        destination_selectors=[
+            "input[placeholder*='To']",
+            "input[placeholder*='Destination']",
+            "input[aria-label*='To']",
+            "input[name*='destination']",
+        ],
+        date_selectors=[
+            "input[placeholder*='Departure']",
+            "input[aria-label*='Departure']",
+            "input[name*='depart']",
+        ],
+        search_patterns=["search", "find", "book", "show flights"],
+    )
+
+
 PROVIDERS = [
     SearchProvider(
         name="Google Flights",
@@ -196,6 +380,27 @@ PROVIDERS = [
         url_builder=aviasales_url,
         result_markers=("show flights", "buy", "found", "price", "$", "€", "₪"),
         no_result_markers=("nothing found", "no tickets found", "no flights found"),
+    ),
+    SearchProvider(
+        name="EL AL",
+        url_builder=elal_home_url,
+        result_markers=("el al", "select", "fare", "flight", "continue", "$", "€", "₪"),
+        no_result_markers=("no flights found", "no availability", "try another date"),
+        search_action=search_elal,
+    ),
+    SearchProvider(
+        name="Arkia",
+        url_builder=arkia_home_url,
+        result_markers=("arkia", "select", "fare", "flight", "continue", "$", "€", "₪"),
+        no_result_markers=("no flights found", "no availability", "try another date"),
+        search_action=search_arkia,
+    ),
+    SearchProvider(
+        name="Israir",
+        url_builder=israir_home_url,
+        result_markers=("israir", "select", "fare", "flight", "continue", "$", "€", "₪"),
+        no_result_markers=("no flights found", "no availability", "try another date"),
+        search_action=search_israir,
     ),
 ]
 
@@ -301,12 +506,20 @@ def check_provider(
     departure_date: date,
     is_fallback: bool,
 ) -> Match | None:
-    url = provider.url_builder(ORIGIN_AIRPORT, destination.code, departure_date)
+    url = (
+        provider.search_action(page, destination, departure_date)
+        if provider.search_action
+        else provider.url_builder(ORIGIN_AIRPORT, destination.code, departure_date)
+    )
+
+    if not url:
+        return None
 
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
-        page.wait_for_timeout(PAGE_SETTLE_MS)
-        accept_cookies_if_present(page)
+        if not provider.search_action:
+            page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+            page.wait_for_timeout(PAGE_SETTLE_MS)
+            accept_cookies_if_present(page)
         page_text = extract_page_text(page)
     except (PlaywrightTimeoutError, PlaywrightError):
         return None
@@ -327,7 +540,7 @@ def check_provider(
         destination=destination.city,
         destination_code=destination.code,
         departure_date=departure_date.isoformat(),
-        source_url=page.url,
+        source_url=url,
         compare_url=google_flights_url(ORIGIN_AIRPORT, destination.code, departure_date),
         is_fallback=is_fallback,
         airlines=airlines,
@@ -376,19 +589,13 @@ def group_matches(matches: list[Match]) -> tuple[list[Match], list[Match]]:
 
 
 def render_match(match: Match) -> str:
-    lines = [
+    return "\n".join(
+        [
         f"- {match.destination} ({match.destination_code}) | {match.departure_date} | {match.provider}",
         f"  Found: {match.source_url}",
         f"  Compare: {match.compare_url}",
-    ]
-
-    official_names = match.airlines or tuple(OFFICIAL_AIRLINE_LINKS.keys())
-    for airline_name in official_names:
-        link = OFFICIAL_AIRLINE_LINKS.get(airline_name)
-        if link:
-            lines.append(f"  {airline_name}: {link}")
-
-    return "\n".join(lines)
+        ]
+    )
 
 
 def chunk_matches(matches: list[Match], heading: str) -> list[str]:
