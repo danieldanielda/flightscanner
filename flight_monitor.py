@@ -60,6 +60,17 @@ TARGET_AIRLINES = (
     "ישראייר",
     "israir",
 )
+AIRLINE_DISPLAY_NAMES = {
+    "el al": "EL AL",
+    "arkia": "Arkia",
+    "israir": "Israir",
+    "ישראייר": "Israir",
+}
+OFFICIAL_AIRLINE_LINKS = {
+    "EL AL": "https://www.elal.com/",
+    "Arkia": "https://www.arkia.com/",
+    "Israir": "https://www.israir.co.il/en-US",
+}
 TELEGRAM_TIMEOUT_SECONDS = 30
 PAGE_TIMEOUT_MS = 75_000
 PAGE_SETTLE_MS = 7_000
@@ -80,6 +91,7 @@ class SearchProvider:
     url_builder: Callable[[str, str, date], str]
     result_markers: tuple[str, ...]
     no_result_markers: tuple[str, ...]
+    require_airline_hint: bool = True
 
 
 @dataclass(frozen=True)
@@ -91,6 +103,7 @@ class Match:
     source_url: str
     compare_url: str
     is_fallback: bool
+    airlines: tuple[str, ...]
 
     @property
     def signature(self) -> str:
@@ -143,6 +156,13 @@ def google_flights_url(origin: str, destination: str, departure_date: date) -> s
 
 
 PROVIDERS = [
+    SearchProvider(
+        name="Google Flights",
+        url_builder=google_flights_url,
+        result_markers=("best departing flights", "price graph", "tracked prices", "bags", "stops"),
+        no_result_markers=("no flights match", "no flights available", "try another date"),
+        require_airline_hint=False,
+    ),
     SearchProvider(
         name="Skyscanner",
         url_builder=skyscanner_url,
@@ -222,6 +242,14 @@ def airline_hint_present(page_text: str) -> bool:
     return any(airline in page_text for airline in TARGET_AIRLINES)
 
 
+def detect_airlines(page_text: str) -> tuple[str, ...]:
+    found: list[str] = []
+    for key, label in AIRLINE_DISPLAY_NAMES.items():
+        if key in page_text and label not in found:
+            found.append(label)
+    return tuple(found)
+
+
 def has_result_markers(page_text: str, provider: SearchProvider) -> bool:
     return any(marker in page_text for marker in provider.result_markers)
 
@@ -289,7 +317,9 @@ def check_provider(
     if not has_result_markers(page_text, provider):
         return None
 
-    if not airline_hint_present(page_text):
+    airlines = detect_airlines(page_text)
+
+    if provider.require_airline_hint and not airlines:
         return None
 
     return Match(
@@ -300,6 +330,7 @@ def check_provider(
         source_url=page.url,
         compare_url=google_flights_url(ORIGIN_AIRPORT, destination.code, departure_date),
         is_fallback=is_fallback,
+        airlines=airlines,
     )
 
 
@@ -345,11 +376,19 @@ def group_matches(matches: list[Match]) -> tuple[list[Match], list[Match]]:
 
 
 def render_match(match: Match) -> str:
-    return (
-        f"- {match.destination} ({match.destination_code}) | {match.departure_date} | {match.provider}\n"
-        f"  Found: {match.source_url}\n"
-        f"  Compare: {match.compare_url}"
-    )
+    lines = [
+        f"- {match.destination} ({match.destination_code}) | {match.departure_date} | {match.provider}",
+        f"  Found: {match.source_url}",
+        f"  Compare: {match.compare_url}",
+    ]
+
+    official_names = match.airlines or tuple(OFFICIAL_AIRLINE_LINKS.keys())
+    for airline_name in official_names:
+        link = OFFICIAL_AIRLINE_LINKS.get(airline_name)
+        if link:
+            lines.append(f"  {airline_name}: {link}")
+
+    return "\n".join(lines)
 
 
 def chunk_matches(matches: list[Match], heading: str) -> list[str]:
