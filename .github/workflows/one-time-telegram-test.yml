@@ -1,0 +1,39 @@
+name: One-Time Telegram Test
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  send-test-message:
+    if: contains(github.event.head_commit.message, 'Send one-time telegram no-results test')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send one-time Telegram test message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          message = (
+              "Тестовое сообщение: проверка выполнена, новых подходящих билетов "
+              "сейчас не найдено. Это разовая проверка; дальше бот будет писать "
+              "только когда найдёт новые варианты."
+          )
+
+          response = requests.post(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              json={
+                  "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                  "text": message,
+                  "disable_web_page_preview": False,
+              },
+              timeout=30,
+          )
+          response.raise_for_status()
+          PY
