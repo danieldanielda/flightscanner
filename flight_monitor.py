@@ -480,10 +480,6 @@ def render_match(match: Match) -> str:
         match.departure_time,
         f"{ORIGIN_LABEL_RU} - {match.destination}",
     ]
-    if match.airline:
-        lines.append(match.airline)
-    if match.price_text:
-        lines.append(f"Цена: {match.price_text}")
     lines.append(match.booking_url)
     return "\n".join(lines)
 
