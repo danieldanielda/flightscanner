@@ -17,8 +17,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<'PY'
+          import json
           import os
-          import requests
+          import urllib.request
 
           message = (
               "Тестовое сообщение: проверка выполнена, новых подходящих билетов "
@@ -26,14 +27,23 @@ jobs:
               "только когда найдёт новые варианты."
           )
 
-          response = requests.post(
-              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
-              json={
+          payload = json.dumps(
+              {
                   "chat_id": os.environ["TELEGRAM_CHAT_ID"],
                   "text": message,
                   "disable_web_page_preview": False,
-              },
-              timeout=30,
+              }
+          ).encode("utf-8")
+
+          request = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
           )
-          response.raise_for_status()
+
+          with urllib.request.urlopen(request, timeout=30) as response:
+              status_code = response.getcode()
+              if status_code < 200 or status_code >= 300:
+                  raise RuntimeError(f"Telegram request failed with status {status_code}")
           PY
