@@ -5,6 +5,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      test_message:
+        description: "Optional Telegram message text for a manual test run"
+        required: false
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -21,6 +26,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEST_MESSAGE: ${{ inputs.test_message }}
         run: |
           python - <<'PY' > telegram-test.log 2>&1
           import json
@@ -29,7 +35,7 @@ jobs:
           import urllib.request
           import urllib.error
 
-          message = (
+          message = os.environ.get("TEST_MESSAGE", "").strip() or (
               "Тестовое сообщение: проверка выполнена, новых подходящих билетов "
               "сейчас не найдено. Это разовая проверка; дальше бот будет писать "
               "только когда найдёт новые варианты."
