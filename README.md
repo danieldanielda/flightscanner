@@ -13,6 +13,7 @@ This repository contains a free, autonomous flight watcher that runs on GitHub A
 - Implemented search sources in this version: `Google Flights`, `Skyscanner`, `Kayak`, `Kiwi`, `Aviasales`, `EL AL`, `Arkia`, `Israir`
 - Duplicate finds are suppressed between hourly runs using a persisted state cache in GitHub Actions
 - A weekly keepalive workflow creates a small commit so scheduled workflows stay active
+- Europe fallback is intentionally limited to a smaller fast-check set so the hourly workflow finishes reliably
 
 ## Important note
 

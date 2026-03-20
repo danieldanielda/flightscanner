@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import traceback
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -34,24 +35,10 @@ PREFERRED_DESTINATIONS = [
 ]
 FALLBACK_EUROPE_DESTINATIONS = [
     ("ATH", "Athens"),
-    ("SOF", "Sofia"),
     ("VIE", "Vienna"),
-    ("BUD", "Budapest"),
-    ("PRG", "Prague"),
-    ("BER", "Berlin"),
-    ("MUC", "Munich"),
-    ("FRA", "Frankfurt"),
     ("CDG", "Paris"),
     ("FCO", "Rome"),
-    ("MXP", "Milan"),
-    ("MAD", "Madrid"),
     ("BCN", "Barcelona"),
-    ("LIS", "Lisbon"),
-    ("WAW", "Warsaw"),
-    ("OTP", "Bucharest"),
-    ("AMS", "Amsterdam"),
-    ("BRU", "Brussels"),
-    ("ZRH", "Zurich"),
     ("LCA", "Larnaca"),
 ]
 TARGET_AIRLINES = (
@@ -67,9 +54,9 @@ AIRLINE_DISPLAY_NAMES = {
     "ישראייר": "Israir",
 }
 TELEGRAM_TIMEOUT_SECONDS = 30
-PAGE_TIMEOUT_MS = 75_000
-PAGE_SETTLE_MS = 7_000
-TEXT_TIMEOUT_MS = 15_000
+PAGE_TIMEOUT_MS = 20_000
+PAGE_SETTLE_MS = 2_500
+TEXT_TIMEOUT_MS = 6_000
 STATE_PATH = Path(os.getenv("FLIGHT_STATE_PATH", ".state/flight_state.json"))
 MAX_RESULTS_PER_MESSAGE = 12
 
@@ -88,6 +75,7 @@ class SearchProvider:
     no_result_markers: tuple[str, ...]
     require_airline_hint: bool = True
     search_action: Callable[[Page, "Destination", date], str | None] | None = None
+    supports_fallback: bool = True
 
 
 @dataclass(frozen=True)
@@ -368,18 +356,21 @@ PROVIDERS = [
             "no flights found",
             "we did not find flights",
         ),
+        supports_fallback=False,
     ),
     SearchProvider(
         name="Kiwi",
         url_builder=kiwi_url,
         result_markers=("book now", "view trip", "show flights", "price", "$", "€", "₪"),
         no_result_markers=("no results found", "no flights found", "try changing your search"),
+        supports_fallback=False,
     ),
     SearchProvider(
         name="Aviasales",
         url_builder=aviasales_url,
         result_markers=("show flights", "buy", "found", "price", "$", "€", "₪"),
         no_result_markers=("nothing found", "no tickets found", "no flights found"),
+        supports_fallback=False,
     ),
     SearchProvider(
         name="EL AL",
@@ -387,6 +378,7 @@ PROVIDERS = [
         result_markers=("el al", "select", "fare", "flight", "continue", "$", "€", "₪"),
         no_result_markers=("no flights found", "no availability", "try another date"),
         search_action=search_elal,
+        supports_fallback=False,
     ),
     SearchProvider(
         name="Arkia",
@@ -394,6 +386,7 @@ PROVIDERS = [
         result_markers=("arkia", "select", "fare", "flight", "continue", "$", "€", "₪"),
         no_result_markers=("no flights found", "no availability", "try another date"),
         search_action=search_arkia,
+        supports_fallback=False,
     ),
     SearchProvider(
         name="Israir",
@@ -401,6 +394,7 @@ PROVIDERS = [
         result_markers=("israir", "select", "fare", "flight", "continue", "$", "€", "₪"),
         no_result_markers=("no flights found", "no availability", "try another date"),
         search_action=search_israir,
+        supports_fallback=False,
     ),
 ]
 
@@ -549,6 +543,7 @@ def check_provider(
 
 def collect_results(destinations: list[Destination], is_fallback: bool) -> list[Match]:
     matches: list[Match] = []
+    providers = [provider for provider in PROVIDERS if provider.supports_fallback or not is_fallback]
 
     with sync_playwright() as playwright:
         context = create_context(playwright)
@@ -557,7 +552,7 @@ def collect_results(destinations: list[Destination], is_fallback: bool) -> list[
         try:
             for destination in destinations:
                 for departure_date in SEARCH_DATES:
-                    for provider in PROVIDERS:
+                    for provider in providers:
                         match = check_provider(page, provider, destination, departure_date, is_fallback)
                         if match is not None:
                             matches.append(match)
@@ -632,29 +627,33 @@ def send_matches(matches: list[Match]) -> None:
 
 
 def main() -> None:
-    sent_signatures = load_state()
+    try:
+        sent_signatures = load_state()
 
-    preferred_destinations = [Destination(code, city) for code, city in PREFERRED_DESTINATIONS]
-    preferred_matches = dedupe_matches(collect_results(preferred_destinations, is_fallback=False))
-    new_preferred_matches = filter_new_matches(preferred_matches, sent_signatures)
+        preferred_destinations = [Destination(code, city) for code, city in PREFERRED_DESTINATIONS]
+        preferred_matches = dedupe_matches(collect_results(preferred_destinations, is_fallback=False))
+        new_preferred_matches = filter_new_matches(preferred_matches, sent_signatures)
 
-    if new_preferred_matches:
-        send_matches(new_preferred_matches)
-        sent_signatures.update(match.signature for match in new_preferred_matches)
+        if new_preferred_matches:
+            send_matches(new_preferred_matches)
+            sent_signatures.update(match.signature for match in new_preferred_matches)
+            save_state(sent_signatures)
+            return
+
+        fallback_destinations = [Destination(code, city) for code, city in FALLBACK_EUROPE_DESTINATIONS]
+        fallback_matches = dedupe_matches(collect_results(fallback_destinations, is_fallback=True))
+        new_fallback_matches = filter_new_matches(fallback_matches, sent_signatures)
+
+        if new_fallback_matches:
+            send_matches(new_fallback_matches)
+            sent_signatures.update(match.signature for match in new_fallback_matches)
+            save_state(sent_signatures)
+            return
+
         save_state(sent_signatures)
-        return
-
-    fallback_destinations = [Destination(code, city) for code, city in FALLBACK_EUROPE_DESTINATIONS]
-    fallback_matches = dedupe_matches(collect_results(fallback_destinations, is_fallback=True))
-    new_fallback_matches = filter_new_matches(fallback_matches, sent_signatures)
-
-    if new_fallback_matches:
-        send_matches(new_fallback_matches)
-        sent_signatures.update(match.signature for match in new_fallback_matches)
-        save_state(sent_signatures)
-        return
-
-    save_state(sent_signatures)
+    except Exception:
+        traceback.print_exc()
+        raise
 
 
 if __name__ == "__main__":
