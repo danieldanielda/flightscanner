@@ -9,15 +9,15 @@ This repository contains a free, autonomous flight watcher that runs on GitHub A
 - Dates: `2026-03-24`, `2026-03-25`, `2026-03-26`, `2026-03-29`, `2026-03-30`
 - Fallback behavior: if no preferred destination is found, it checks a configurable list of major European airports
 - Notifications: only when something is found
-- Telegram message includes a direct source link and a Google Flights comparison link
-- Implemented search sources in this version: `Google Flights`, `Skyscanner`
+- Telegram message is sent in Russian and only for concrete flight options with a departure time and a direct offer link
+- Implemented search source in this version: `Skyscanner`
 - Duplicate finds are suppressed between hourly runs using a persisted state cache in GitHub Actions
 - A weekly keepalive workflow creates a small commit so scheduled workflows stay active
 - Europe fallback is intentionally limited to a smaller fast-check set so the hourly workflow finishes reliably
 
 ## Important note
 
-This version uses browser automation and best-effort text detection on `Google Flights` and `Skyscanner`. Those sites can still change markup or anti-bot behavior over time, but this setup is intentionally much simpler and faster than the earlier multi-source scraper.
+This version uses browser automation and Skyscanner response parsing to avoid noisy generic search links. It now skips non-specific results and only sends alerts when it can identify a concrete option with a usable booking link. Skyscanner can still change markup or API payloads over time, so this remains a best-effort monitor.
 
 ## GitHub setup
 

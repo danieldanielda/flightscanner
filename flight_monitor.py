@@ -8,7 +8,8 @@ import traceback
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Callable
+from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from playwright.sync_api import BrowserContext
@@ -19,7 +20,7 @@ from playwright.sync_api import sync_playwright
 
 
 ORIGIN_AIRPORT = "TLV"
-ORIGIN_LABEL = "Ben Gurion (Tel Aviv)"
+ORIGIN_LABEL_RU = "Бен-Гурион"
 SEARCH_DATES = [
     date(2026, 3, 24),
     date(2026, 3, 25),
@@ -28,25 +29,25 @@ SEARCH_DATES = [
     date(2026, 3, 30),
 ]
 PREFERRED_DESTINATIONS = [
-    ("TBS", "Tbilisi"),
-    ("GYD", "Baku"),
-    ("BUS", "Batumi"),
-    ("EVN", "Yerevan"),
+    ("TBS", "Тбилиси"),
+    ("GYD", "Баку"),
+    ("BUS", "Батуми"),
+    ("EVN", "Ереван"),
 ]
 FALLBACK_EUROPE_DESTINATIONS = [
-    ("ATH", "Athens"),
-    ("VIE", "Vienna"),
-    ("CDG", "Paris"),
-    ("FCO", "Rome"),
-    ("BCN", "Barcelona"),
-    ("LCA", "Larnaca"),
+    ("ATH", "Афины"),
+    ("VIE", "Вена"),
+    ("CDG", "Париж"),
+    ("FCO", "Рим"),
+    ("BCN", "Барселона"),
+    ("LCA", "Ларнака"),
 ]
 TELEGRAM_TIMEOUT_SECONDS = 30
 PAGE_TIMEOUT_MS = 20_000
-PAGE_SETTLE_MS = 2_500
+PAGE_SETTLE_MS = 5_000
 TEXT_TIMEOUT_MS = 6_000
 STATE_PATH = Path(os.getenv("FLIGHT_STATE_PATH", ".state/flight_state.json"))
-MAX_RESULTS_PER_MESSAGE = 12
+MAX_RESULTS_PER_MESSAGE = 8
 
 
 @dataclass(frozen=True)
@@ -56,21 +57,15 @@ class Destination:
 
 
 @dataclass(frozen=True)
-class SearchProvider:
-    name: str
-    url_builder: Callable[[str, str, date], str]
-    result_markers: tuple[str, ...]
-    no_result_markers: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class Match:
     provider: str
     destination: str
     destination_code: str
     departure_date: str
-    source_url: str
-    compare_url: str
+    departure_time: str
+    airline: str
+    booking_url: str
+    price_text: str | None
     is_fallback: bool
 
     @property
@@ -80,7 +75,8 @@ class Match:
                 self.provider,
                 self.destination_code,
                 self.departure_date,
-                self.source_url,
+                self.departure_time,
+                self.booking_url,
             ]
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -94,33 +90,13 @@ def skyscanner_url(origin: str, destination: str, departure_date: date) -> str:
     )
 
 
-def google_flights_url(origin: str, destination: str, departure_date: date) -> str:
-    query = (
-        f"Flights from {origin} to {destination} on {departure_date.isoformat()} "
-        "one way bag included"
-    )
-    return f"https://www.google.com/travel/flights?q={requests.utils.quote(query)}"
-
-
-PROVIDERS = [
-    SearchProvider(
-        name="Google Flights",
-        url_builder=google_flights_url,
-        result_markers=("best departing flights", "price graph", "tracked prices", "bags", "stops"),
-        no_result_markers=("no flights match", "no flights available", "try another date"),
-    ),
-    SearchProvider(
-        name="Skyscanner",
-        url_builder=skyscanner_url,
-        result_markers=("select", "book", "price", "depart", "return", "$", "€", "₪"),
-        no_result_markers=(
-            "no flights found",
-            "we couldn't find any flights",
-            "there are no available flights",
-            "sorry, there are no available flights",
-        ),
-    ),
-]
+NO_RESULT_MARKERS = (
+    "no flights found",
+    "we couldn't find any flights",
+    "there are no available flights",
+    "sorry, there are no available flights",
+    "no flights available",
+)
 
 
 def normalize_text(value: str) -> str:
@@ -161,12 +137,12 @@ def telegram_send(message: str) -> None:
     response.raise_for_status()
 
 
-def has_result_markers(page_text: str, provider: SearchProvider) -> bool:
-    return any(marker in page_text for marker in provider.result_markers)
+def has_result_markers(page_text: str) -> bool:
+    return "select" in page_text or "book" in page_text or "price" in page_text
 
 
-def has_no_result_markers(page_text: str, provider: SearchProvider) -> bool:
-    return any(marker in page_text for marker in provider.no_result_markers)
+def has_no_result_markers(page_text: str) -> bool:
+    return any(marker in page_text for marker in NO_RESULT_MARKERS)
 
 
 def accept_cookies_if_present(page: Page) -> None:
@@ -192,6 +168,218 @@ def extract_page_text(page: Page) -> str:
     return normalize_text(page.locator("body").inner_text(timeout=TEXT_TIMEOUT_MS))
 
 
+def walk_json(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from walk_json(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from walk_json(item)
+
+
+def first_non_empty_string(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def format_time(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = re.search(r"(\d{2}:\d{2})", value)
+    if match:
+        return match.group(1)
+    return None
+
+
+def format_price(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        amount = value.get("amount") or value.get("price") or value.get("formatted")
+        currency = value.get("currency") or value.get("unit")
+        if amount and currency:
+            return f"{amount} {currency}"
+        if amount:
+            return str(amount)
+    return None
+
+
+def is_useful_booking_url(value: Any) -> bool:
+    if not isinstance(value, str) or not value.startswith("http"):
+        return False
+    host = urlparse(value).netloc.lower()
+    if not host:
+        return False
+    if "google.com" in host and "/travel/flights" in value:
+        return False
+    return True
+
+
+def find_booking_url(value: Any) -> str | None:
+    if isinstance(value, dict):
+        direct_candidates = [
+            value.get("deepLink"),
+            value.get("deep_link"),
+            value.get("deeplink"),
+            value.get("bookingUrl"),
+            value.get("booking_url"),
+            value.get("url"),
+            value.get("link"),
+        ]
+        for candidate in direct_candidates:
+            if is_useful_booking_url(candidate):
+                return candidate
+        for item in value.values():
+            found = find_booking_url(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = find_booking_url(item)
+            if found:
+                return found
+    elif is_useful_booking_url(value):
+        return value
+    return None
+
+
+def find_first_mapping_with_keys(payloads: list[dict[str, Any]], required_keys: set[str]) -> dict[str, Any] | None:
+    for payload in payloads:
+        for item in walk_json(payload):
+            if required_keys.issubset(item.keys()):
+                return item
+    return None
+
+
+def carrier_name_from_leg(leg: dict[str, Any], carriers_by_id: dict[str, Any]) -> str:
+    carrier_ids: list[Any] = []
+    carriers = leg.get("carriers")
+    if isinstance(carriers, dict):
+        for key in ("marketing", "operating"):
+            maybe_items = carriers.get(key)
+            if isinstance(maybe_items, list):
+                for item in maybe_items:
+                    if isinstance(item, dict):
+                        carrier_ids.append(item.get("id") or item.get("code"))
+                    else:
+                        carrier_ids.append(item)
+    if not carrier_ids:
+        for key in ("marketingCarrierIds", "carrierIds", "carriers"):
+            maybe_items = leg.get(key)
+            if isinstance(maybe_items, list):
+                carrier_ids.extend(maybe_items)
+
+    names: list[str] = []
+    for carrier_id in carrier_ids:
+        carrier = carriers_by_id.get(str(carrier_id)) or carriers_by_id.get(carrier_id)
+        if isinstance(carrier, dict):
+            name = first_non_empty_string(
+                carrier.get("name"),
+                carrier.get("displayCode"),
+                carrier.get("code"),
+            )
+            if name and name not in names:
+                names.append(name)
+        elif isinstance(carrier_id, str) and carrier_id not in names:
+            names.append(carrier_id)
+
+    return ", ".join(names) if names else "Авиакомпания не указана"
+
+
+def parse_skyscanner_payloads(
+    payloads: list[dict[str, Any]],
+    destination: Destination,
+    departure_date: date,
+    is_fallback: bool,
+) -> list[Match]:
+    match_container = find_first_mapping_with_keys(payloads, {"itineraries", "legs"})
+    if not match_container:
+        return []
+
+    itineraries_raw = match_container.get("itineraries")
+    if isinstance(itineraries_raw, dict):
+        itineraries = list(itineraries_raw.values())
+    elif isinstance(itineraries_raw, list):
+        itineraries = itineraries_raw
+    else:
+        return []
+
+    legs_raw = match_container.get("legs")
+    carriers_raw = match_container.get("carriers", {})
+    if not isinstance(legs_raw, dict):
+        return []
+
+    carriers_by_id: dict[str, Any] = {}
+    if isinstance(carriers_raw, dict):
+        carriers_by_id = {str(key): value for key, value in carriers_raw.items()}
+
+    matches: list[Match] = []
+    for itinerary in itineraries:
+        if not isinstance(itinerary, dict):
+            continue
+
+        leg_ids = itinerary.get("legIds")
+        if not isinstance(leg_ids, list) or not leg_ids:
+            outbound_leg_id = itinerary.get("outboundLegId")
+            leg_ids = [outbound_leg_id] if outbound_leg_id else []
+        if not leg_ids:
+            continue
+
+        leg = legs_raw.get(leg_ids[0])
+        if not isinstance(leg, dict):
+            continue
+
+        departure_time = format_time(
+            first_non_empty_string(
+                leg.get("departure"),
+                leg.get("departureDateTime"),
+                leg.get("departureTime"),
+                leg.get("localDeparture"),
+            )
+        )
+        if not departure_time:
+            continue
+
+        pricing_candidates = itinerary.get("pricingOptions") or itinerary.get("pricing_options") or []
+        if not isinstance(pricing_candidates, list):
+            pricing_candidates = [pricing_candidates]
+
+        booking_url = find_booking_url(pricing_candidates) or find_booking_url(itinerary)
+        if not booking_url:
+            continue
+
+        price_text = None
+        for option in pricing_candidates:
+            if isinstance(option, dict):
+                price_text = format_price(option.get("price") or option.get("amount") or option)
+                if price_text:
+                    break
+
+        matches.append(
+            Match(
+                provider="Skyscanner",
+                destination=destination.city,
+                destination_code=destination.code,
+                departure_date=departure_date.isoformat(),
+                departure_time=departure_time,
+                airline=carrier_name_from_leg(leg, carriers_by_id),
+                booking_url=booking_url,
+                price_text=price_text,
+                is_fallback=is_fallback,
+            )
+        )
+
+        if len(matches) >= 3:
+            break
+
+    return matches
+
+
 def create_context(playwright) -> BrowserContext:
     browser = playwright.chromium.launch(headless=True)
     return browser.new_context(
@@ -205,38 +393,42 @@ def create_context(playwright) -> BrowserContext:
     )
 
 
-def check_provider(
+def check_skyscanner(
     page: Page,
-    provider: SearchProvider,
     destination: Destination,
     departure_date: date,
     is_fallback: bool,
-) -> Match | None:
-    url = provider.url_builder(ORIGIN_AIRPORT, destination.code, departure_date)
+) -> list[Match]:
+    url = skyscanner_url(ORIGIN_AIRPORT, destination.code, departure_date)
+    payloads: list[dict[str, Any]] = []
+
+    def handle_response(response) -> None:
+        try:
+            content_type = response.headers.get("content-type", "")
+            if "json" not in content_type.lower():
+                return
+            data = response.json()
+            if isinstance(data, dict):
+                payloads.append(data)
+        except Exception:
+            return
 
     try:
+        page.on("response", handle_response)
         page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
         page.wait_for_timeout(PAGE_SETTLE_MS)
         accept_cookies_if_present(page)
         page_text = extract_page_text(page)
     except (PlaywrightTimeoutError, PlaywrightError):
-        return None
+        return []
 
-    if has_no_result_markers(page_text, provider):
-        return None
+    if has_no_result_markers(page_text):
+        return []
 
-    if not has_result_markers(page_text, provider):
-        return None
+    if not has_result_markers(page_text):
+        return []
 
-    return Match(
-        provider=provider.name,
-        destination=destination.city,
-        destination_code=destination.code,
-        departure_date=departure_date.isoformat(),
-        source_url=url,
-        compare_url=google_flights_url(ORIGIN_AIRPORT, destination.code, departure_date),
-        is_fallback=is_fallback,
-    )
+    return parse_skyscanner_payloads(payloads, destination, departure_date, is_fallback)
 
 
 def collect_results(destinations: list[Destination], is_fallback: bool) -> list[Match]:
@@ -250,15 +442,12 @@ def collect_results(destinations: list[Destination], is_fallback: bool) -> list[
         try:
             for destination in destinations:
                 for departure_date in SEARCH_DATES:
-                    for provider in PROVIDERS:
-                        print(
-                            f"[flight-watch] phase={phase} destination={destination.code} "
-                            f"date={departure_date.isoformat()} provider={provider.name}",
-                            flush=True,
-                        )
-                        match = check_provider(page, provider, destination, departure_date, is_fallback)
-                        if match is not None:
-                            matches.append(match)
+                    print(
+                        f"[flight-watch] phase={phase} destination={destination.code} "
+                        f"date={departure_date.isoformat()} provider=Skyscanner",
+                        flush=True,
+                    )
+                    matches.extend(check_skyscanner(page, destination, departure_date, is_fallback))
         finally:
             context.close()
 
@@ -287,27 +476,46 @@ def group_matches(matches: list[Match]) -> tuple[list[Match], list[Match]]:
 
 
 def render_match(match: Match) -> str:
-    return "\n".join(
-        [
-        f"- {match.destination} ({match.destination_code}) | {match.departure_date} | {match.provider}",
-        f"  Found: {match.source_url}",
-        f"  Compare: {match.compare_url}",
-        ]
-    )
+    lines = [
+        match.departure_time,
+        f"{ORIGIN_LABEL_RU} - {match.destination}",
+    ]
+    if match.airline:
+        lines.append(match.airline)
+    if match.price_text:
+        lines.append(f"Цена: {match.price_text}")
+    lines.append(match.booking_url)
+    return "\n".join(lines)
+
+
+def russian_date_label(iso_date: str) -> str:
+    year, month, day = iso_date.split("-")
+    return f"{day}.{month}"
 
 
 def chunk_matches(matches: list[Match], heading: str) -> list[str]:
+    matches = sorted(matches, key=lambda item: (item.departure_date, item.departure_time, item.destination))
     chunks: list[str] = []
     current_lines = [heading]
+    current_count = 0
+    current_date = None
 
-    for index, match in enumerate(matches, start=1):
+    for match in matches:
+        if current_count >= MAX_RESULTS_PER_MESSAGE:
+            chunks.append("\n\n".join(current_lines))
+            current_lines = [heading]
+            current_count = 0
+            current_date = None
+
+        if current_date != match.departure_date:
+            current_date = match.departure_date
+            current_lines.append(russian_date_label(match.departure_date))
+
         current_lines.append(render_match(match))
-        should_flush = index % MAX_RESULTS_PER_MESSAGE == 0 or index == len(matches)
-        if should_flush:
-            chunks.append("\n".join(current_lines))
-            if index != len(matches):
-                current_lines = [f"{heading} (continued)"]
+        current_count += 1
 
+    if len(current_lines) > 1:
+        chunks.append("\n\n".join(current_lines))
     return chunks
 
 
@@ -316,12 +524,12 @@ def send_matches(matches: list[Match]) -> None:
 
     messages: list[str] = []
     if preferred:
-        messages.extend(chunk_matches(preferred, f"Flights found from {ORIGIN_LABEL}"))
+        messages.extend(chunk_matches(preferred, "Найдены билеты на следующие даты:"))
     if fallback:
         messages.extend(
             chunk_matches(
                 fallback,
-                f"No preferred city found from {ORIGIN_LABEL}; Europe fallback options found",
+                "По приоритетным городам ничего не найдено, но есть варианты по Европе:",
             )
         )
 
