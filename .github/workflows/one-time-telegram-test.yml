@@ -11,13 +11,12 @@ on:
         required: false
         type: string
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   send-test-message:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'Send one-time telegram no-results test')
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Send one-time Telegram test message
