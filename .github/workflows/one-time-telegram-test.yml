@@ -13,11 +13,13 @@ jobs:
 
     steps:
       - name: Send one-time Telegram test message
+        id: telegram-test
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python - <<'PY'
+          python - <<'PY' > telegram-test.log 2>&1
           import json
           import os
           import sys
@@ -66,3 +68,23 @@ jobs:
               print(body, file=sys.stderr)
               raise RuntimeError(f"Telegram HTTP error {exc.code}: {body}") from exc
           PY
+
+      - name: Show Telegram test log
+        if: always()
+        run: cat telegram-test.log
+
+      - name: Write Telegram test summary
+        if: always()
+        run: |
+          echo "## Telegram test diagnostic summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Step outcome: ${{ steps.telegram-test.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Log" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          cat telegram-test.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail workflow if Telegram test failed
+        if: steps.telegram-test.outcome != 'success'
+        run: exit 1
