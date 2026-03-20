@@ -35,11 +35,38 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Run flight monitor
+        id: run-monitor
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FLIGHT_STATE_PATH: .state/flight_state.json
-        run: python flight_monitor.py
+        run: |
+          mkdir -p .logs
+          python -u flight_monitor.py 2>&1 | tee .logs/flight-monitor.log
+
+      - name: Show monitor log tail
+        if: always()
+        run: |
+          echo "Last 120 log lines:"
+          tail -n 120 .logs/flight-monitor.log || true
+
+      - name: Write job summary
+        if: always()
+        run: |
+          echo "## Flight Watch diagnostic summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Run step outcome: ${{ steps.run-monitor.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Run step conclusion: ${{ steps.run-monitor.conclusion }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Log tail" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          tail -n 120 .logs/flight-monitor.log >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail workflow if monitor failed
+        if: steps.run-monitor.outcome != 'success'
+        run: exit 1
 
       - name: Save state cache
         if: always()

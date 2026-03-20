@@ -241,6 +241,7 @@ def check_provider(
 
 def collect_results(destinations: list[Destination], is_fallback: bool) -> list[Match]:
     matches: list[Match] = []
+    phase = "fallback" if is_fallback else "preferred"
 
     with sync_playwright() as playwright:
         context = create_context(playwright)
@@ -250,6 +251,11 @@ def collect_results(destinations: list[Destination], is_fallback: bool) -> list[
             for destination in destinations:
                 for departure_date in SEARCH_DATES:
                     for provider in PROVIDERS:
+                        print(
+                            f"[flight-watch] phase={phase} destination={destination.code} "
+                            f"date={departure_date.isoformat()} provider={provider.name}",
+                            flush=True,
+                        )
                         match = check_provider(page, provider, destination, departure_date, is_fallback)
                         if match is not None:
                             matches.append(match)
