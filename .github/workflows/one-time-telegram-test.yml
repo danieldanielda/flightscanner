@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   send-test-message:
@@ -19,7 +20,9 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import sys
           import urllib.request
+          import urllib.error
 
           message = (
               "Тестовое сообщение: проверка выполнена, новых подходящих билетов "
@@ -27,9 +30,16 @@ jobs:
               "только когда найдёт новые варианты."
           )
 
+          token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+          chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+          if not token:
+              raise RuntimeError("TELEGRAM_BOT_TOKEN is empty or missing")
+          if not chat_id:
+              raise RuntimeError("TELEGRAM_CHAT_ID is empty or missing")
+
           payload = json.dumps(
               {
-                  "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                  "chat_id": chat_id,
                   "text": message,
                   "disable_web_page_preview": False,
               }
@@ -42,8 +52,17 @@ jobs:
               method="POST",
           )
 
-          with urllib.request.urlopen(request, timeout=30) as response:
-              status_code = response.getcode()
-              if status_code < 200 or status_code >= 300:
-                  raise RuntimeError(f"Telegram request failed with status {status_code}")
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  body = response.read().decode("utf-8", errors="replace")
+                  print(body)
+                  status_code = response.getcode()
+                  if status_code < 200 or status_code >= 300:
+                      raise RuntimeError(
+                          f"Telegram request failed with status {status_code}: {body}"
+                      )
+          except urllib.error.HTTPError as exc:
+              body = exc.read().decode("utf-8", errors="replace")
+              print(body, file=sys.stderr)
+              raise RuntimeError(f"Telegram HTTP error {exc.code}: {body}") from exc
           PY
