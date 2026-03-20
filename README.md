@@ -10,18 +10,14 @@ This repository contains a free, autonomous flight watcher that runs on GitHub A
 - Fallback behavior: if no preferred destination is found, it checks a configurable list of major European airports
 - Notifications: only when something is found
 - Telegram message includes a direct source link and a Google Flights comparison link
-- Implemented search sources in this version: `Google Flights`, `Skyscanner`, `Kayak`, `Kiwi`, `Aviasales`, `EL AL`, `Arkia`, `Israir`
+- Implemented search sources in this version: `Google Flights`, `Skyscanner`
 - Duplicate finds are suppressed between hourly runs using a persisted state cache in GitHub Actions
 - A weekly keepalive workflow creates a small commit so scheduled workflows stay active
 - Europe fallback is intentionally limited to a smaller fast-check set so the hourly workflow finishes reliably
 
 ## Important note
 
-This version uses browser automation and best-effort text detection on flight search result pages. Airline and aggregator sites sometimes change their markup, booking flows, or anti-bot behavior, so selectors and result heuristics may need adjustment later.
-
-The aggregator providers check that the page text appears to mention at least one of the target airlines: `EL AL`, `Arkia`, or `Israir`.
-
-The airline-site providers try to execute a direct search flow on `EL AL`, `Arkia`, and `Israir`, and only report a link when the run appears to reach a result page on that airline's own site.
+This version uses browser automation and best-effort text detection on `Google Flights` and `Skyscanner`. Those sites can still change markup or anti-bot behavior over time, but this setup is intentionally much simpler and faster than the earlier multi-source scraper.
 
 ## GitHub setup
 
