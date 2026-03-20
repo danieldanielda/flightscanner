@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright
 
 
 ORIGIN_AIRPORT = "TLV"
-ORIGIN_LABEL_RU = "Бен-Гурион"
+ORIGIN_LABEL_RU = "Бен-Гурион (Тель-Авив)"
 SEARCH_DATES = [
     date(2026, 3, 24),
     date(2026, 3, 25),
@@ -29,18 +29,18 @@ SEARCH_DATES = [
     date(2026, 3, 30),
 ]
 PREFERRED_DESTINATIONS = [
-    ("TBS", "Тбилиси"),
-    ("GYD", "Баку"),
-    ("BUS", "Батуми"),
-    ("EVN", "Ереван"),
+    ("TBS", "Тбилиси", "Шота Руставели (Тбилиси)"),
+    ("GYD", "Баку", "Гейдар Алиев (Баку)"),
+    ("BUS", "Батуми", "Батуми (Батуми)"),
+    ("EVN", "Ереван", "Звартноц (Ереван)"),
 ]
 FALLBACK_EUROPE_DESTINATIONS = [
-    ("ATH", "Афины"),
-    ("VIE", "Вена"),
-    ("CDG", "Париж"),
-    ("FCO", "Рим"),
-    ("BCN", "Барселона"),
-    ("LCA", "Ларнака"),
+    ("ATH", "Афины", "Элефтериос Венизелос (Афины)"),
+    ("VIE", "Вена", "Швехат (Вена)"),
+    ("CDG", "Париж", "Шарль-де-Голль (Париж)"),
+    ("FCO", "Рим", "Фьюмичино (Рим)"),
+    ("BCN", "Барселона", "Эль-Прат (Барселона)"),
+    ("LCA", "Ларнака", "Ларнака (Ларнака)"),
 ]
 TELEGRAM_TIMEOUT_SECONDS = 30
 PAGE_TIMEOUT_MS = 20_000
@@ -54,6 +54,7 @@ MAX_RESULTS_PER_MESSAGE = 8
 class Destination:
     code: str
     city: str
+    display_label: str
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class Match:
     provider: str
     destination: str
     destination_code: str
+    destination_label: str
     departure_date: str
     departure_time: str
     airline: str
@@ -74,6 +76,7 @@ class Match:
             [
                 self.provider,
                 self.destination_code,
+                self.destination_label,
                 self.departure_date,
                 self.departure_time,
                 self.booking_url,
@@ -365,6 +368,7 @@ def parse_skyscanner_payloads(
                 provider="Skyscanner",
                 destination=destination.city,
                 destination_code=destination.code,
+                destination_label=destination.display_label,
                 departure_date=departure_date.isoformat(),
                 departure_time=departure_time,
                 airline=carrier_name_from_leg(leg, carriers_by_id),
@@ -478,7 +482,7 @@ def group_matches(matches: list[Match]) -> tuple[list[Match], list[Match]]:
 def render_match(match: Match) -> str:
     lines = [
         match.departure_time,
-        f"{ORIGIN_LABEL_RU} - {match.destination}",
+        f"{ORIGIN_LABEL_RU} -> {match.destination_label}",
     ]
     lines.append(match.booking_url)
     return "\n".join(lines)
@@ -537,7 +541,9 @@ def main() -> None:
     try:
         sent_signatures = load_state()
 
-        preferred_destinations = [Destination(code, city) for code, city in PREFERRED_DESTINATIONS]
+        preferred_destinations = [
+            Destination(code, city, display_label) for code, city, display_label in PREFERRED_DESTINATIONS
+        ]
         preferred_matches = dedupe_matches(collect_results(preferred_destinations, is_fallback=False))
         new_preferred_matches = filter_new_matches(preferred_matches, sent_signatures)
 
@@ -547,7 +553,10 @@ def main() -> None:
             save_state(sent_signatures)
             return
 
-        fallback_destinations = [Destination(code, city) for code, city in FALLBACK_EUROPE_DESTINATIONS]
+        fallback_destinations = [
+            Destination(code, city, display_label)
+            for code, city, display_label in FALLBACK_EUROPE_DESTINATIONS
+        ]
         fallback_matches = dedupe_matches(collect_results(fallback_destinations, is_fallback=True))
         new_fallback_matches = filter_new_matches(fallback_matches, sent_signatures)
 
